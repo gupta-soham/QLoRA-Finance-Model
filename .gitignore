@@ -16,3 +16,7 @@ __pycache__
 *.model
 *.pth
 *.bin
+
+# Trained model outputs
+financial-qlora-model*
+*.safetensors

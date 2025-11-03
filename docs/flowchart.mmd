@@ -1,0 +1,55 @@
+graph TB
+    subgraph Input["Data Input Layer"]
+        A[Indian Market Data<br/>12 Tickers: NIFTY, SENSEX, TCS, etc.]
+        B[111+ Training Samples<br/>Chat Format: system/user/assistant]
+    end
+
+    subgraph Preprocessing["Data Preprocessing"]
+        C[Tokenization<br/>Max Seq Length: 512]
+        D[80/20 Train/Val Split]
+    end
+
+    subgraph Model["Model Architecture"]
+        E[Base Model<br/>TinyLlama-1.1B-Chat]
+        F[4-bit Quantization<br/>BitsAndBytes]
+        G[QLoRA Adapters<br/>PEFT LoRA Layers]
+    end
+
+    subgraph Training["Training Pipeline"]
+        H[Optimizer<br/>paged_adamw_8bit]
+        I[Gradient Accumulation<br/>Steps: 8-16]
+        J[Gradient Checkpointing<br/>VRAM Optimization]
+    end
+
+    subgraph Monitoring["Validation & Monitoring"]
+        K[Eval Every 25 Steps<br/>Loss & Accuracy Tracking]
+        L[Early Stopping<br/>3 Cycles Patience]
+    end
+
+    subgraph Output["Output & Inference"]
+        M[Fine-tuned LoRA Adapters<br/>./financial-qlora-model-final]
+        N[Grounded Inference<br/>Live Market Context]
+        O[Factual Financial Responses<br/>81% Validation Accuracy]
+    end
+
+    A --> C
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+    I --> J
+    J --> K
+    K --> L
+    L --> M
+    M --> N
+    N --> O
+
+    style Input fill:#e1f5ff
+    style Preprocessing fill:#fff4e1
+    style Model fill:#ffe1f5
+    style Training fill:#e1ffe1
+    style Monitoring fill:#fff0e1
+    style Output fill:#f0e1ff

@@ -21,12 +21,18 @@ from transformers import (
     BitsAndBytesConfig,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer, SFTConfig
 from datasets import Dataset
 import json
 
 # ============================================================================
-# SECTION 2: Fetch Market Data (Past 100 Days)
+# SECTION 2: TRL imports (use correct modules)
+# ============================================================================
+from trl.trainer.sft_trainer import SFTTrainer
+from trl.trainer.sft_config import SFTConfig
+from trl.models.utils import setup_chat_format
+
+# ============================================================================
+# SECTION 3: Fetch Market Data (Past 100 Days)
 # ============================================================================
 print("Fetching market data...")
 
@@ -288,7 +294,7 @@ def detect_bitsandbytes_available() -> bool:
         return False
 
 # Model selection
-base_model_name = args.model or "stabilityai/stablelm-3b-4e1t"  # 3B parameter model
+base_model_name = args.model or "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # Small instruct model with chat template
 tiny_model_name = "sshleifer/tiny-gpt2"  # tiny CPU-friendly model
 model_name = tiny_model_name if quick_mode else base_model_name
 
@@ -343,6 +349,19 @@ if use_4bit:
         torch.backends.cudnn.allow_tf32 = True
     except Exception:
         pass
+
+# Ensure the tokenizer has a chat template; if not, set one up
+try:
+    if getattr(tokenizer, "chat_template", None) is None:
+        # Use a standard chat format; chatml is broadly compatible
+        model, tokenizer = setup_chat_format(
+            model,
+            tokenizer,
+            format="chatml",
+            resize_to_multiple_of=64,
+        )
+except Exception as e:
+    print(f"[WARN] Failed to setup chat format automatically: {e}. Proceeding without explicit chat template.")
 
 # ============================================================================
 # SECTION 5: LoRA Configuration
@@ -470,33 +489,58 @@ else:
 print("\nTesting model...")
 
 def generate_response(instruction, context=""):
-    prompt = f"""### Instruction:
-{instruction}
+    # Build chat messages and apply chat template
+    messages = [
+        {"role": "system", "content": "You are an expert financial analyst for Indian markets."},
+        {"role": "user", "content": f"{instruction}\n\nContext: {context}"},
+    ]
 
-### Context:
-{context}
+    # Use tokenizer's chat template for generation prompt
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
 
-### Response:
-"""
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
+        gen_out = model.generate(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs.get("attention_mask"),
             max_new_tokens=100 if quick_mode else 200,
             temperature=0.7,
             top_p=0.9,
             do_sample=True,
         )
 
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return response.split("### Response:")[-1].strip()
+    # Decode only the generated continuation beyond the prompt
+    input_len = inputs["input_ids"].shape[1]
+    gen_tokens = gen_out[0][input_len:]
+    decoded = tokenizer.decode(gen_tokens, skip_special_tokens=True)
+    return decoded.strip()
 
-# Test queries
+# Build grounded contexts from fetched market_data for more accurate answers
+
+def latest_context_for(ticker_key: str) -> str:
+    if ticker_key not in market_data or len(market_data[ticker_key]) == 0:
+        return f"No live data available for {ticker_key}."
+    df = market_data[ticker_key]
+    row = df.iloc[-1]
+    date = row.name.strftime('%Y-%m-%d') if hasattr(row.name, 'strftime') else str(row.name)
+    def gv(x):
+        return x.item() if hasattr(x, 'item') else float(x)
+    return (
+        f"date={date}; close={gv(row['Close']):.2f}; high={gv(row['High']):.2f}; "
+        f"low={gv(row['Low']):.2f}; volume={gv(row['Volume']):.0f}"
+    )
+
+# Test queries with grounded contexts
 test_queries = [
-    ("What is the latest price of NIFTY 50?", "Current market data"),
-    ("How has SENSEX performed recently?", "Last 5 days"),
-    ("Compare GOLD ETF with NIFTY MIDCAP", "Investment analysis"),
+    ("What is the latest price of NIFTY 50?", latest_context_for('NIFTY_50')),
+    ("How has SENSEX performed recently? Give a 5-day summary.", latest_context_for('SENSEX')),
+    ("Compare GOLD ETF with NIFTY MIDCAP over the most recent day.",
+     f"GOLD_ETF: {latest_context_for('GOLD_ETF')} | NIFTY_MIDCAP: {latest_context_for('NIFTY_MIDCAP')}")
 ]
 
 print("\n" + "="*60)

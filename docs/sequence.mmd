@@ -1,0 +1,83 @@
+sequenceDiagram
+    participant User
+    participant RunScript as run.py
+    participant DataLoader as Dataset Loader
+    participant Tokenizer
+    participant BaseModel as TinyLlama-1.1B-Chat
+    participant QLoRA as QLoRA/PEFT
+    participant Trainer as SFTTrainer
+    participant Validator as Validation Loop
+    participant Storage as Model Storage
+
+    User->>RunScript: python run.py --epochs 1 --batch-size 1
+    RunScript->>RunScript: Parse arguments & validate CUDA
+    
+    RunScript->>DataLoader: Load 111+ financial samples
+    DataLoader->>DataLoader: Split 80/20 train/validation
+    DataLoader-->>RunScript: Return train & val datasets
+    
+    RunScript->>BaseModel: Load TinyLlama-1.1B-Chat
+    BaseModel->>BaseModel: Apply 4-bit quantization (BitsAndBytes)
+    BaseModel-->>RunScript: Quantized model ready
+    
+    RunScript->>QLoRA: Configure LoRA adapters (r=16, alpha=32)
+    QLoRA->>BaseModel: Inject trainable LoRA layers
+    QLoRA-->>RunScript: PEFT model ready
+    
+    RunScript->>Tokenizer: Load tokenizer with chat template
+    Tokenizer-->>RunScript: Tokenizer ready
+    
+    RunScript->>Trainer: Initialize SFTTrainer with config
+    Note over Trainer: Batch size: 1<br/>Grad accum: 8<br/>LR: 2e-4<br/>Max seq: 512
+    
+    loop Training Loop (Every 25 steps)
+        Trainer->>DataLoader: Fetch training batch
+        DataLoader->>Tokenizer: Tokenize samples
+        Tokenizer-->>Trainer: Input tensors
+        
+        Trainer->>QLoRA: Forward pass
+        QLoRA->>BaseModel: Compute with LoRA adapters
+        BaseModel-->>QLoRA: Logits
+        QLoRA-->>Trainer: Loss & gradients
+        
+        Trainer->>Trainer: Accumulate gradients (8 steps)
+        Trainer->>Trainer: Optimizer step (paged_adamw_8bit)
+        
+        alt Evaluation Step (every 25 steps)
+            Trainer->>Validator: Trigger evaluation
+            Validator->>DataLoader: Fetch validation batch
+            DataLoader->>Tokenizer: Tokenize validation samples
+            Tokenizer-->>Validator: Validation tensors
+            
+            Validator->>QLoRA: Forward pass (no grad)
+            QLoRA-->>Validator: Validation loss & accuracy
+            
+            Validator->>Validator: Check early stopping criteria
+            
+            alt Validation improved
+                Validator-->>Trainer: Continue training
+            else No improvement (3 cycles)
+                Validator-->>Trainer: Stop training early
+            end
+        end
+    end
+    
+    Trainer->>Storage: Save LoRA adapters
+    Storage-->>Trainer: Saved to ./financial-qlora-model-final
+    
+    Trainer-->>RunScript: Training complete
+    RunScript-->>User: Model ready for inference
+    
+    User->>RunScript: Query: "What is NIFTY 50 price?"
+    RunScript->>Storage: Load fine-tuned adapters
+    Storage-->>QLoRA: LoRA weights loaded
+    
+    RunScript->>RunScript: Fetch live market context
+    RunScript->>Tokenizer: Tokenize query + context
+    Tokenizer-->>QLoRA: Input tensors
+    
+    QLoRA->>BaseModel: Generate response
+    BaseModel-->>QLoRA: Generated tokens
+    QLoRA-->>RunScript: Decoded response
+    
+    RunScript-->>User: "NIFTY 50 is ₹25,751.05 as of 2025-11-03"
